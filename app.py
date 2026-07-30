@@ -64,20 +64,35 @@ def tactician_node(state: AgentState):
 def critic_node(state: AgentState):
     prompt = f"""
     You are a high-level pickleball reviewer. Evaluate this tactical plan against the scout report.
-    Check for high-risk blunders or tactical holes (e.g., leaving the middle open, misreading spin).
+    Check for high-risk blunders or tactical holes.
     
     Scout Report: {state['scout_analysis']}
     Proposed Plan: {state['proposed_tactics']}
     
-    If the plan is tactical solid, reply with ONLY the word: APPROVED.
+    If the plan is tactically solid, reply with ONLY the word: APPROVED.
     Otherwise, provide 1-2 concise bullet points on what needs to be fixed.
     """
     response = llm.invoke(prompt)
-    return {"critic_feedback": response.content}
+    
+    # Extract raw string if response content is returned as a list
+    content = response.content
+    if isinstance(content, list):
+        content = " ".join(
+            item if isinstance(item, str) else item.get("text", "") 
+            for item in content
+        )
+
+    return {"critic_feedback": str(content)}
 
 # 4. Routing Logic
 def should_continue(state: AgentState) -> str:
-    if "APPROVED" in state["critic_feedback"].upper() or state["revision_count"] >= 3:
+    feedback = state.get("critic_feedback", "")
+    
+    # Flatten if it's somehow still a list
+    if isinstance(feedback, list):
+        feedback = " ".join(str(i) for i in feedback)
+        
+    if "APPROVED" in str(feedback).upper() or state.get("revision_count", 0) >= 3:
         return END
     return "tactician"
 
