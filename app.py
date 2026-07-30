@@ -22,7 +22,7 @@ app.add_middleware(
 # 1. Initialize Gemini Model (uses GOOGLE_API_KEY environment variable)
 # Free tier model: gemini-2.5-flash (or gemini-1.5-flash)
 llm = ChatGoogleGenerativeAI(
-    model="gemini-2.5-flash",
+    model="gemini-3.6-flash",
     temperature=0.3
 )
 
