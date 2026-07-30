@@ -1,5 +1,6 @@
 import os
 from typing import TypedDict, List
+from urllib.parse import quote_plus
 from fastapi import FastAPI, HTTPException
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
@@ -18,38 +19,38 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# 1. Initialize Gemini
 llm = ChatGoogleGenerativeAI(
-    model="gemini-3.6-flash",
+    model="gemini-1.5-flash",
     temperature=0.2
 )
 
 # ==========================================
-# 2. Define Pydantic Output Contracts
+# 1. New Resource Schemas
 # ==========================================
+class VideoResource(BaseModel):
+    title: str = Field(description="Name of the technique or drill to watch")
+    search_query: str = Field(description="Exact Youtube search phrase (e.g. 'pickleball hold and hit drill')")
+
 class ScoutReportSchema(BaseModel):
-    summary: str = Field(description="Executive summary of the opponent's playstyle")
+    summary: str = Field(description="Executive summary of opponent playstyle")
     strengths: List[str] = Field(description="Key strengths observed")
-    weaknesses: List[str] = Field(description="Key weaknesses or vulnerabilities to exploit")
-    preferred_shots: List[str] = Field(description="Their go-to shots or patterns")
+    weaknesses: List[str] = Field(description="Key weaknesses or vulnerabilities")
 
 class TacticalPlanSchema(BaseModel):
-    headline: str = Field(description="Catchy overall strategic theme for the match")
+    headline: str = Field(description="Overall strategic theme for the match")
     tactics: List[str] = Field(description="3 clear, actionable tactical instructions")
-    coach_cue: str = Field(description="A short mental reminder phrase for between points")
+    coach_cue: str = Field(description="Short mental reminder phrase")
+    recommended_videos: List[VideoResource] = Field(description="1-2 video topics to study for these tactics")
 
 class ReviewSchema(BaseModel):
-    is_approved: bool = Field(description="True if plan is tactically sound, False if blunders exist")
-    feedback: str = Field(description="APPROVED if true, or bullet points on what needs fixing")
+    is_approved: bool = Field(description="True if plan is sound, False if blunders exist")
+    feedback: str = Field(description="APPROVED or revision notes")
 
-# Bind models to LLM for guaranteed output structure
+# Bind models
 scout_llm = llm.with_structured_output(ScoutReportSchema)
 tactician_llm = llm.with_structured_output(TacticalPlanSchema)
 critic_llm = llm.with_structured_output(ReviewSchema)
 
-# ==========================================
-# 3. LangGraph State Schema
-# ==========================================
 class AgentState(TypedDict):
     opponent_notes: str
     scout_analysis: ScoutReportSchema
@@ -57,65 +58,41 @@ class AgentState(TypedDict):
     critic_review: ReviewSchema
     revision_count: int
 
-# ==========================================
-# 4. Graph Nodes
-# ==========================================
 def scout_node(state: AgentState):
-    prompt = f"""
-    You are an elite pickleball scout. Analyze these opponent notes and extract structured observations:
-    
-    Notes: {state['opponent_notes']}
-    """
+    prompt = f"Analyze these opponent notes: {state['opponent_notes']}"
     report: ScoutReportSchema = scout_llm.invoke(prompt)
     return {"scout_analysis": report}
 
 def tactician_node(state: AgentState):
-    feedback_context = f"\nPrevious Reviewer Feedback: {state['critic_review'].feedback}" if state.get('critic_review') else ""
-    
+    feedback_context = f"\nPrevious Feedback: {state['critic_review'].feedback}" if state.get('critic_review') else ""
     prompt = f"""
-    You are a high-level pickleball tactical coach. Based on this scout report, create a structured tactical plan.
-    
+    Create a tactical plan and recommend 1-2 video topics to help practice these counters.
     Scout Summary: {state['scout_analysis'].summary}
-    Weaknesses to exploit: {', '.join(state['scout_analysis'].weaknesses)}
+    Weaknesses: {', '.join(state['scout_analysis'].weaknesses)}
     {feedback_context}
     """
     plan: TacticalPlanSchema = tactician_llm.invoke(prompt)
-    return {
-        "proposed_tactics": plan,
-        "revision_count": state["revision_count"] + 1
-    }
+    return {"proposed_tactics": plan, "revision_count": state["revision_count"] + 1}
 
 def critic_node(state: AgentState):
     prompt = f"""
-    You are a pickleball strategic reviewer. Evaluate this plan against the scout report.
-    Check for high-risk blunders (e.g. leaving the middle wide open, misreading 3rd shot drives vs drops).
-    
-    Scout Report: {state['scout_analysis'].summary}
-    Proposed Tactics: {', '.join(state['proposed_tactics'].tactics)}
-    
-    If the plan is solid, set is_approved to True and feedback to 'APPROVED'.
-    Otherwise set is_approved to False and explain what needs fixing in feedback.
+    Evaluate this plan against the scout report. Check for blunders.
+    Scout: {state['scout_analysis'].summary}
+    Tactics: {', '.join(state['proposed_tactics'].tactics)}
     """
     review: ReviewSchema = critic_llm.invoke(prompt)
     return {"critic_review": review}
 
-# ==========================================
-# 5. Routing Logic
-# ==========================================
 def should_continue(state: AgentState) -> str:
     review = state.get("critic_review")
     if (review and review.is_approved) or state["revision_count"] >= 3:
         return END
     return "tactician"
 
-# ==========================================
-# 6. Build Graph
-# ==========================================
 builder = StateGraph(AgentState)
 builder.add_node("scout", scout_node)
 builder.add_node("tactician", tactician_node)
 builder.add_node("critic", critic_node)
-
 builder.set_entry_point("scout")
 builder.add_edge("scout", "tactician")
 builder.add_edge("tactician", "critic")
@@ -123,25 +100,25 @@ builder.add_conditional_edges("critic", should_continue, {"tactician": "tacticia
 
 graph = builder.compile()
 
-# ==========================================
-# 7. API Endpoint & Static Mount
-# ==========================================
 class MatchRequest(BaseModel):
     opponent_notes: str
 
 @app.post("/api/analyze")
 async def analyze_match(request: MatchRequest):
     try:
-        initial_state = {
-            "opponent_notes": request.opponent_notes,
-            "revision_count": 0
-        }
+        initial_state = {"opponent_notes": request.opponent_notes, "revision_count": 0}
         final_state = graph.invoke(initial_state)
         
-        # Pydantic objects convert cleanly to standard dicts for API JSON responses
+        plan_dict = final_state["proposed_tactics"].model_dump()
+        
+        # Helper: Transform queries into dynamic, working YouTube URLs
+        for video in plan_dict.get("recommended_videos", []):
+            encoded_query = quote_plus(video["search_query"])
+            video["url"] = f"https://www.youtube.com/results?search_query={encoded_query}"
+
         return {
             "scout_analysis": final_state["scout_analysis"].model_dump(),
-            "tactical_plan": final_state["proposed_tactics"].model_dump(),
+            "tactical_plan": plan_dict,
             "iterations": final_state["revision_count"]
         }
     except Exception as e:
