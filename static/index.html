@@ -3,11 +3,14 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Pickleball Match Profiler</title>
+    <title>Pickleball Strategy Profiler</title>
     <style>
         body { font-family: system-ui, -apple-system, sans-serif; max-width: 750px; margin: 2rem auto; padding: 0 1rem; color: #1a1a1a; }
-        textarea { width: 100%; height: 100px; padding: 0.75rem; border: 1px solid #ccc; border-radius: 6px; box-sizing: border-box; font-family: inherit; }
-        button { margin-top: 0.5rem; padding: 0.75rem 1.5rem; background: #0070f3; color: white; border: none; border-radius: 6px; font-weight: 600; cursor: pointer; }
+        .form-group { margin-bottom: 1.25rem; }
+        label { font-weight: 600; display: block; margin-bottom: 0.4rem; }
+        textarea { width: 100%; height: 90px; padding: 0.75rem; border: 1px solid #ccc; border-radius: 6px; box-sizing: border-box; font-family: inherit; }
+        input[type="file"] { border: 1px solid #ccc; padding: 0.5rem; border-radius: 6px; width: 100%; box-sizing: border-box; }
+        button { padding: 0.75rem 1.5rem; background: #0070f3; color: white; border: none; border-radius: 6px; font-weight: 600; cursor: pointer; }
         button:hover { background: #0059b3; }
         .card { background: #f8f9fa; border: 1px solid #e9ecef; padding: 1.25rem; border-radius: 8px; margin-top: 1rem; }
         .badge { display: inline-block; background: #e2e8f0; padding: 0.25rem 0.5rem; border-radius: 4px; font-size: 0.85rem; font-weight: 600; margin-bottom: 0.5rem; }
@@ -19,10 +22,18 @@
 </head>
 <body>
     <h2>🏓 Pickleball Opponent Profiler</h2>
-    <p>Enter raw notes about your opponent's playstyle:</p>
     
-    <textarea id="notes" placeholder="e.g., Aggressive poacher, deep sidespin serve, weak backhand reach..."></textarea><br>
-    <button onclick="analyze()">Generate Tactical Game Plan</button>
+    <div class="form-group">
+        <label for="videoFile">Upload Short Video Clip (10-20 seconds max):</label>
+        <input type="file" id="videoFile" accept="video/mp4,video/mov,video/quicktime">
+    </div>
+
+    <div class="form-group">
+        <label for="notes">Additional Opponent Notes (Optional):</label>
+        <textarea id="notes" placeholder="e.g. Weak backhand reach, poaches often on 3rd shot, drops high..."></textarea>
+    </div>
+
+    <button onclick="analyzeMatch()">Generate Tactical Plan</button>
 
     <div id="status" style="margin-top: 1rem; font-weight: 500; color: #666;"></div>
     
@@ -30,7 +41,7 @@
         <div class="card">
             <h3>Scout Report</h3>
             <p id="scoutSummary"></p>
-            <strong>Weaknesses to Exploit:</strong>
+            <strong>Weaknesses Exploit List:</strong>
             <ul id="scoutWeaknesses"></ul>
         </div>
         
@@ -39,7 +50,7 @@
             <h3 id="planHeadline" style="margin-top: 0.25rem;"></h3>
             <strong>Tactical Action Items:</strong>
             <ul id="planTactics"></ul>
-            <p><strong>Mental Cue:</strong> <em id="coachCue"></em></p>
+            <p><strong>Mental Coach Cue:</strong> <em id="coachCue"></em></p>
             
             <div style="margin-top: 1rem; border-top: 1px solid #ddd; padding-top: 0.75rem;">
                 <strong>📺 Recommended Drill Videos:</strong>
@@ -49,37 +60,46 @@
     </div>
 
     <script>
-        async function analyze() {
-            const notes = document.getElementById("notes").value;
+        async function analyzeMatch() {
+            const fileInput = document.getElementById("videoFile");
+            const notesInput = document.getElementById("notes").value;
             const status = document.getElementById("status");
             const results = document.getElementById("results");
 
-            if (!notes.trim()) return alert("Please enter opponent notes.");
+            if (!fileInput.files[0] && !notesInput.trim()) {
+                return alert("Please upload a video clip or enter text notes.");
+            }
 
-            status.innerText = "Running multi-agent analysis & gathering video references...";
+            status.innerText = "Analyzing video & text via LangGraph agent loop...";
             results.style.display = "none";
+
+            // Prepare multipart form data payload
+            const formData = new FormData();
+            if (fileInput.files[0]) {
+                formData.append("file", fileInput.files[0]);
+            }
+            formData.append("opponent_notes", notesInput);
 
             try {
                 const res = await fetch("/api/analyze", {
                     method: "POST",
-                    headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ opponent_notes: notes })
+                    body: formData // Browser sets multipart boundary header automatically
                 });
 
-                if (!res.ok) throw new Error("API request failed.");
+                if (!res.ok) throw new Error("API call failed.");
 
                 const data = await res.json();
                 
-                // Populate Scout UI
+                // Render Scout output
                 document.getElementById("scoutSummary").innerText = data.scout_analysis.summary;
                 document.getElementById("scoutWeaknesses").innerHTML = data.scout_analysis.weaknesses.map(w => `<li>${w}</li>`).join("");
 
-                // Populate Tactics UI
+                // Render Game Plan output
                 document.getElementById("planHeadline").innerText = data.tactical_plan.headline;
                 document.getElementById("planTactics").innerHTML = data.tactical_plan.tactics.map(t => `<li>${t}</li>`).join("");
                 document.getElementById("coachCue").innerText = `"${data.tactical_plan.coach_cue}"`;
                 
-                // Populate Video Links
+                // Render YouTube Links
                 const videoDiv = document.getElementById("videoList");
                 videoDiv.innerHTML = data.tactical_plan.recommended_videos.map(v => `
                     <div style="margin-bottom: 0.5rem;">
@@ -88,7 +108,7 @@
                     </div>
                 `).join("");
                 
-                status.innerText = `Complete (${data.iterations} critique pass).`;
+                status.innerText = `Optimization complete (${data.iterations} iteration pass).`;
                 results.style.display = "block";
             } catch (err) {
                 status.innerText = "Error analyzing match: " + err.message;
